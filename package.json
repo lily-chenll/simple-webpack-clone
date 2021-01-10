@@ -1,0 +1,22 @@
+{
+  "name": "simple-webpack-clone",
+  "version": "1.0.0",
+  "description": "This is a simple version implementation of webpack.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lily-chenll/simple-webpack-clone.git"
+  },
+  "author": "Chen Lili",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/lily-chenll/simple-webpack-clone/issues"
+  },
+  "homepage": "https://github.com/lily-chenll/simple-webpack-clone#readme",
+  "dependencies": {
+    "acorn": "^8.0.4"
+  }
+}
