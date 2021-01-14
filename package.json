@@ -17,6 +17,6 @@
   },
   "homepage": "https://github.com/lily-chenll/simple-webpack-clone#readme",
   "dependencies": {
-    "acorn": "^8.0.4"
+    "@babel/core": "^7.12.10"
   }
 }
