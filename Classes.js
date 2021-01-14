@@ -13,17 +13,19 @@ interface Dependency {
 
 */
 
-export class Dependency {
+class Module {
+  constructor(filePath, isEntryFile, dependencies) {
+    this.filepath = filePath;
+    this.isEntryFile = isEntryFile;
+    this.dependencies = dependencies;
+  }
+}
+
+class Dependency {
   constructor(module, exports) {
     this.module = module;
     this.exports = exports;
   }
 }
 
-export class Module {
-  constructor(filePath, isEntryFile, dependencies) {
-    this.filePath = filePath;
-    this.isEntryFile = isEntryFile;
-    this.dependencies = dependencies;
-  }
-}
+module.exports = { Module, Dependency };
