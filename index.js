@@ -7,6 +7,8 @@ const generate = require("@babel/generator").default;
 const t = require("@babel/types");
 
 const getFileAbsolutePath = require("./getFilePath");
+const EXPORTS = "_exports";
+const GET_MODULE = "_getModule";
 
 let moduleGraph;
 let visitedModule;
@@ -52,7 +54,7 @@ const buildTemplate = (entryFile) => {
 })();`;
 };
 
-const getFunc = (code) => `function(_exports, _getModule){\n${code}\n}`;
+const getFunc = (code) => `function(${EXPORTS}, ${GET_MODULE}){\n${code}\n}`;
 
 const getReExportVariables = (node) => {
   // [localName, exportName]
@@ -105,7 +107,7 @@ const getExportsVariables = (node) => {
       return node.declaration.declarations.map((declarator) => [
         declarator.id,
         declarator.id,
-        t.variableDeclaration("const", [declarator]),
+        t.variableDeclaration(node.declaration.kind, [declarator]),
       ]);
     } else {
       // for export list
@@ -117,26 +119,26 @@ const getExportsVariables = (node) => {
   }
 
   // exportDefaultDeclaration
-  const isDefaultVarOrAnynoFunc = !(
+  const isDefaultVarOrAnonyFunc = !(
     t.isDeclaration(node.declaration) && node.declaration.id
   );
   return [
     [
       t.identifier("default"),
-      isDefaultVarOrAnynoFunc ? node.declaration : node.declaration.id,
-      isDefaultVarOrAnynoFunc ? null : node.declaration,
+      isDefaultVarOrAnonyFunc ? node.declaration : node.declaration.id,
+      isDefaultVarOrAnonyFunc ? null : node.declaration,
     ],
   ];
 };
 
 const buildGetModuleExpression = (filePath, param = "*") => {
   if (param === "*") {
-    return t.callExpression(t.identifier("_getModule"), [
+    return t.callExpression(t.identifier(GET_MODULE), [
       t.stringLiteral(filePath),
     ]);
   }
   return t.memberExpression(
-    t.callExpression(t.identifier("_getModule"), [t.stringLiteral(filePath)]),
+    t.callExpression(t.identifier(GET_MODULE), [t.stringLiteral(filePath)]),
     param
   );
 };
@@ -151,7 +153,7 @@ const buildExportAllExpression = (filePath) => {
     t.callExpression(
       t.memberExpression(t.identifier("Object"), t.identifier("assign")),
       [
-        t.identifier("_exports"),
+        t.identifier(EXPORTS),
         t.callExpression(
           t.arrowFunctionExpression(
             [t.objectPattern([t.restElement(temp)])],
@@ -173,7 +175,7 @@ const buildExportAllExpression = (filePath) => {
 };
 
 const buildExportExpression = (id) => {
-  return getIdMemberExpression("_exports", id);
+  return getIdMemberExpression(EXPORTS, id);
 };
 
 const buildGraph = (filePath) => {
@@ -189,7 +191,8 @@ const buildGraph = (filePath) => {
 };
 
 const transform = () => {
-  const idMap = {};
+  const importIdMap = {};
+  const exportIdMap = {};
   let idIndex = 0;
 
   return (ast, filePath) => {
@@ -198,7 +201,7 @@ const transform = () => {
         const importedFileRelativePath = path.node.source.value;
         const newName = `_v${idIndex++}`;
 
-        buildImportIdMap(path.node, newName, idMap);
+        buildImportIdMap(path.node, newName, importIdMap);
         // const importedVariables = getImportedVariables(path.node);
         const importedFileAbsolutePath = getFileAbsolutePath(
           importedFileRelativePath,
@@ -254,6 +257,9 @@ const transform = () => {
             if (declaration) {
               replacements.push(declaration);
             }
+            if (!isPush && ref?.name) {
+              exportIdMap[ref.name] = buildExportExpression(id);
+            }
             replacements.push(
               t.expressionStatement(
                 t.assignmentExpression("=", buildExportExpression(id), ref)
@@ -270,10 +276,19 @@ const transform = () => {
         }
       },
       Identifier(path) {
-        if (path.isReferencedIdentifier() && idMap[path.node.name]) {
-          const pathWithBinding = path.scope.getBinding(path.node.name).path;
-          if (t.isProgram(pathWithBinding.scope.block)) {
-            path.replaceWith(idMap[path.node.name]);
+        const pathWithBinding = path.scope.getBinding(path.node.name)?.path;
+        if (
+          path.isReferencedIdentifier() &&
+          t.isProgram(pathWithBinding?.scope?.block)
+        ) {
+          if (importIdMap[path.node.name]) {
+            path.replaceWith(importIdMap[path.node.name]);
+          } else if (exportIdMap[path.node.name]) {
+            const isExportAssignment =
+              t.isAssignmentExpression(path.parentPath.node) &&
+              path.parentPath.node?.left?.object?.name === EXPORTS;
+            if (!isExportAssignment)
+              path.replaceWith(exportIdMap[path.node.name]);
           }
         }
       },
