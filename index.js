@@ -271,7 +271,10 @@ const transform = () => {
       },
       Identifier(path) {
         if (path.isReferencedIdentifier() && idMap[path.node.name]) {
-          path.replaceWith(idMap[path.node.name]);
+          const pathWithBinding = path.scope.getBinding(path.node.name).path;
+          if (t.isProgram(pathWithBinding.scope.block)) {
+            path.replaceWith(idMap[path.node.name]);
+          }
         }
       },
     });
