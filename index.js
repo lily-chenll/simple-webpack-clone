@@ -93,8 +93,6 @@ const buildImportIdMap = (node, mapName, map) => {
         mapName,
         specifier.imported.name
       );
-    } else if (t.isImportNamespaceSpecifier(specifier)) {
-      map[specifier.local.name] = getIdMemberExpression(mapName);
     }
   });
 };
@@ -199,10 +197,12 @@ const transform = () => {
     traverse(ast, {
       ImportDeclaration(path) {
         const importedFileRelativePath = path.node.source.value;
-        const newName = `_v${idIndex++}`;
+        const newName = t.isImportNamespaceSpecifier(path.node.specifiers[0])
+          ? path.node.specifiers[0].local.name
+          : `_v${idIndex++}`;
 
         buildImportIdMap(path.node, newName, importIdMap);
-        // const importedVariables = getImportedVariables(path.node);
+
         const importedFileAbsolutePath = getFileAbsolutePath(
           importedFileRelativePath,
           filePath
