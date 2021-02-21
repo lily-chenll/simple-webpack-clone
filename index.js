@@ -10,35 +10,60 @@ const getFileAbsolutePath = require("./getFilePath");
 const EXPORTS = "_exports";
 const GET_MODULE = "_getModule";
 
-let moduleGraph;
-let visitedModule;
+let outputFolderPath = "";
+let entryFilePath = "";
 
 const buildModuleGraph = (entryFile, outputFolder) => {
-  moduleGraph = "";
-  visitedModule = new Set();
+  outputFolderPath = outputFolder;
 
   try {
-    buildGraph(entryFile);
-    const outputFile = path.join(outputFolder, "index.js");
-    fs.writeFileSync(outputFile, buildTemplate(entryFile));
+    const moduleGraph = getModuleGraph(entryFile);
+    const outputFile = path.join(outputFolder, path.basename(entryFile));
+    fs.writeFileSync(outputFile, buildTemplate(entryFile, moduleGraph));
 
-    // garbage collection
-    moduleGraph = null;
-    visitedModule = null;
-    return outputFile;
+    outputFolderPath = null;
+    entryFilePath = null;
+    // return outputFile;
+    return { folder: outputFolder, main: outputFile };
+  } catch (e) {
+    throw e;
+  }
+};
+
+const buildChunkModuleGraph = (filePath) => {
+  try {
+    const moduleGraph = getModuleGraph(filePath);
+    const outputFile = path.join(outputFolderPath, path.basename(filePath));
+    fs.writeFileSync(outputFile, buildChunkTemplate(filePath, moduleGraph));
+  } catch (e) {
+    throw e;
+  }
+};
+
+const CssLoader = (filePath) => {
+  try {
+    const fileName = path.basename(filePath);
+    const outputFile = path.join(outputFolderPath, path.basename(filePath));
+    fs.copyFileSync(outputFile, filePath);
   } catch (e) {
     throw e;
   }
 };
 
 // TODO: Better way to write into file
-const buildTemplate = (entryFile) => {
+const buildTemplate = (entryFile, moduleGraph) => {
   return `const moduleGraph = {\n${moduleGraph}};
 
 (function () {
   const entryFilePath = '${entryFile}';
-
   const memoModule = {};
+  const visitedModule = new Set();
+  const installedChunks = new Set();
+
+  globalThis._add_async_modules = (chunkId, chunkModuleGraph) => {
+    installedChunks.add(chunkId);
+    Object.assign(moduleGraph, chunkModuleGraph);
+  }
 
   const _getModule = path => {
     if (memoModule[path]) {
@@ -48,10 +73,35 @@ const buildTemplate = (entryFile) => {
     memoModule[path] = {};
     moduleGraph[path](memoModule[path], _getModule);
     return memoModule[path];
-  }
+  };
 
+  const getChunkPath = chunkId => {
+    const paths = chunkId.split('/');
+    return '/' + paths.pop();
+  };
+
+  const loadModule = modulePath => new Promise((resolve, reject) => {
+    const newScript = document.createElement('script');
+    newScript.setAttribute('src', modulePath);
+    document.body.appendChild(newScript);
+    newScript.onload = () => {
+      resolve();
+    }
+  });
+
+  _getModule.async = async (chunkId) => {
+    if (!installedChunks.has(chunkId)) {
+      const chunkPath = getChunkPath(chunkId);
+      await loadModule(chunkPath);
+    }
+    return _getModule(chunkId);
+  };
   moduleGraph[entryFilePath]({}, _getModule);
 })();`;
+};
+
+const buildChunkTemplate = (filePath, moduleGraph) => {
+  return `globalThis._add_async_modules('${filePath}', {${moduleGraph}});`;
 };
 
 const getFunc = (code) => `function(${EXPORTS}, ${GET_MODULE}){\n${code}\n}`;
@@ -176,59 +226,37 @@ const buildExportExpression = (id) => {
   return getIdMemberExpression(EXPORTS, id);
 };
 
-const buildGraph = (filePath) => {
-  if (visitedModule.has(filePath)) return;
-  visitedModule.add(filePath);
-  const sourceCode = String(fs.readFileSync(filePath));
-  const fileAST = babel.parseSync(sourceCode);
+const getModuleGraph = (filePath) => {
+  let moduleGraph = "";
+  let visitedModule = new Set();
 
-  transform()(fileAST, filePath);
+  const buildGraph = (filePath) => {
+    if (visitedModule.has(filePath)) return;
+    visitedModule.add(filePath);
+    const sourceCode = String(fs.readFileSync(filePath));
+    const fileAST = babel.parseSync(sourceCode);
 
-  const { code } = generate(fileAST);
-  moduleGraph += `${JSON.stringify(filePath)}: ${getFunc(code)},\n`;
-};
+    transform()(fileAST, filePath);
 
-const transform = () => {
-  const importIdMap = {};
-  const exportIdMap = {};
-  let idIndex = 0;
+    const { code } = generate(fileAST);
+    moduleGraph += `${JSON.stringify(filePath)}: ${getFunc(code)},\n`;
+  };
 
-  return (ast, filePath) => {
-    traverse(ast, {
-      ImportDeclaration(path) {
-        const importedFileRelativePath = path.node.source.value;
-        const newName = t.isImportNamespaceSpecifier(path.node.specifiers[0])
-          ? path.node.specifiers[0].local.name
-          : `_v${idIndex++}`;
+  const transform = () => {
+    const importIdMap = {};
+    const exportIdMap = {};
+    let idIndex = 0;
 
-        buildImportIdMap(path.node, newName, importIdMap);
-
-        const importedFileAbsolutePath = getFileAbsolutePath(
-          importedFileRelativePath,
-          filePath
-        );
-
-        buildGraph(importedFileAbsolutePath);
-
-        const replacement = path.node.specifiers.length
-          ? t.variableDeclaration("const", [
-              t.variableDeclarator(
-                t.identifier(newName),
-                buildGetModuleExpression(importedFileAbsolutePath)
-              ),
-            ])
-          : buildGetModuleExpression(importedFileAbsolutePath);
-
-        path.replaceWith(replacement);
-      },
-      ExportDeclaration(path) {
-        // TODO: Better way to handle export statements
-        let replacements = [];
-        let isPush = false;
-        if (path.node.source) {
-          // for re-exports
+    return (ast, filePath) => {
+      traverse(ast, {
+        ImportDeclaration(path) {
           const importedFileRelativePath = path.node.source.value;
-          const importedVariables = getReExportVariables(path.node);
+          const newName = t.isImportNamespaceSpecifier(path.node.specifiers[0])
+            ? path.node.specifiers[0].local.name
+            : `_v${idIndex++}`;
+
+          buildImportIdMap(path.node, newName, importIdMap);
+
           const importedFileAbsolutePath = getFileAbsolutePath(
             importedFileRelativePath,
             filePath
@@ -236,64 +264,130 @@ const transform = () => {
 
           buildGraph(importedFileAbsolutePath);
 
-          replacements = importedVariables.map((_v) =>
-            _v[0] === "*"
-              ? buildExportAllExpression(importedFileAbsolutePath)
-              : t.expressionStatement(
-                  t.assignmentExpression(
-                    "=",
-                    buildExportExpression(_v[0]),
-                    buildGetModuleExpression(importedFileAbsolutePath, _v[1])
-                  )
-                )
-          );
-        } else {
-          const exports = getExportsVariables(path.node);
-          // for export list
-          isPush = !!(!path.node.declaration && path.node.specifiers);
+          const replacement = path.node.specifiers.length
+            ? t.variableDeclaration("const", [
+                t.variableDeclarator(
+                  t.identifier(newName),
+                  buildGetModuleExpression(importedFileAbsolutePath)
+                ),
+              ])
+            : buildGetModuleExpression(importedFileAbsolutePath);
 
-          exports.forEach((_e) => {
-            const [id, ref, declaration] = _e;
-            if (declaration) {
-              replacements.push(declaration);
+          path.replaceWith(replacement);
+        },
+        ExportDeclaration(path) {
+          // TODO: Better way to handle export statements
+          let replacements = [];
+          let isPush = false;
+          if (path.node.source) {
+            // for re-exports
+            const importedFileRelativePath = path.node.source.value;
+            const importedVariables = getReExportVariables(path.node);
+            const importedFileAbsolutePath = getFileAbsolutePath(
+              importedFileRelativePath,
+              filePath
+            );
+
+            buildGraph(importedFileAbsolutePath);
+
+            replacements = importedVariables.map((_v) =>
+              _v[0] === "*"
+                ? buildExportAllExpression(importedFileAbsolutePath)
+                : t.expressionStatement(
+                    t.assignmentExpression(
+                      "=",
+                      buildExportExpression(_v[0]),
+                      buildGetModuleExpression(importedFileAbsolutePath, _v[1])
+                    )
+                  )
+            );
+          } else {
+            const exports = getExportsVariables(path.node);
+            // for export list
+            isPush = !!(!path.node.declaration && path.node.specifiers);
+
+            exports.forEach((_e) => {
+              const [id, ref, declaration] = _e;
+              if (declaration) {
+                replacements.push(declaration);
+              }
+              if (!isPush && ref?.name) {
+                exportIdMap[ref.name] = buildExportExpression(id);
+              }
+              replacements.push(
+                t.expressionStatement(
+                  t.assignmentExpression("=", buildExportExpression(id), ref)
+                )
+              );
+            });
+          }
+
+          if (isPush) {
+            path.container.push(...replacements);
+            path.remove();
+          } else {
+            path.replaceWithMultiple(replacements);
+          }
+        },
+        Identifier(path) {
+          const pathWithBinding = path.scope.getBinding(path.node.name)?.path;
+          if (
+            path.isReferencedIdentifier() &&
+            t.isProgram(pathWithBinding?.scope?.block)
+          ) {
+            if (importIdMap[path.node.name]) {
+              path.replaceWith(importIdMap[path.node.name]);
+            } else if (exportIdMap[path.node.name]) {
+              const isExportAssignment =
+                t.isAssignmentExpression(path.parentPath.node) &&
+                path.parentPath.node?.left?.object?.name === EXPORTS;
+              if (!isExportAssignment)
+                path.replaceWith(exportIdMap[path.node.name]);
             }
-            if (!isPush && ref?.name) {
-              exportIdMap[ref.name] = buildExportExpression(id);
-            }
-            replacements.push(
-              t.expressionStatement(
-                t.assignmentExpression("=", buildExportExpression(id), ref)
+          }
+        },
+        Import(path) {
+          const importedFileRelativePath =
+            path.parentPath.node.arguments[0].value;
+          const importedFileAbsolutePath = getFileAbsolutePath(
+            importedFileRelativePath,
+            filePath
+          );
+          // TODO:
+          if (visitedModule.has(importedFileAbsolutePath)) {
+            path.parentPath.replaceWith(
+              t.callExpression(
+                t.memberExpression(
+                  t.identifier("Promise"),
+                  t.identifier("resolve")
+                ),
+                [
+                  t.callExpression(t.identifier(GET_MODULE), [
+                    t.stringLiteral(importedFileAbsolutePath),
+                  ]),
+                ]
               )
             );
-          });
-        }
-
-        if (isPush) {
-          path.container.push(...replacements);
-          path.remove();
-        } else {
-          path.replaceWithMultiple(replacements);
-        }
-      },
-      Identifier(path) {
-        const pathWithBinding = path.scope.getBinding(path.node.name)?.path;
-        if (
-          path.isReferencedIdentifier() &&
-          t.isProgram(pathWithBinding?.scope?.block)
-        ) {
-          if (importIdMap[path.node.name]) {
-            path.replaceWith(importIdMap[path.node.name]);
-          } else if (exportIdMap[path.node.name]) {
-            const isExportAssignment =
-              t.isAssignmentExpression(path.parentPath.node) &&
-              path.parentPath.node?.left?.object?.name === EXPORTS;
-            if (!isExportAssignment)
-              path.replaceWith(exportIdMap[path.node.name]);
+          } else {
+            buildChunkModuleGraph(importedFileAbsolutePath);
+            // for dynamic import
+            path.parentPath.replaceWith(
+              t.callExpression(
+                t.memberExpression(
+                  t.identifier(GET_MODULE),
+                  t.identifier("async")
+                ),
+                [t.stringLiteral(importedFileAbsolutePath)]
+              )
+            );
           }
-        }
-      },
-    });
+        },
+      });
+    };
   };
+
+  buildGraph(filePath);
+  return moduleGraph;
 };
 
 module.exports = buildModuleGraph;
